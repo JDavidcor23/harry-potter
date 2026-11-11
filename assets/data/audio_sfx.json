@@ -1,0 +1,28 @@
+{
+  "voices": 12,
+  "pitch_jitter": 0.06,
+  "sounds": {
+    "spell_cast": { "db": -6 },
+    "spell_hit": { "db": -3 },
+    "spell_miss": { "db": -9 },
+    "protego": { "db": -6 },
+    "shield_block": { "db": -5 },
+    "shield_break": { "db": -3 },
+    "rock_levitate": { "db": -10 },
+    "rock_throw": { "db": -6 },
+    "dark_spell": { "db": -6 },
+    "rock_smash": { "db": -8 },
+    "player_hurt": { "db": -3 },
+    "villain_hurt": { "db": -4 },
+    "thunder": { "db": -12, "jitter": 0.1 },
+    "villain_land": { "db": -3 },
+    "duel_beam": { "db": -9, "loop": true, "jitter": 0.0 },
+    "duel_mash": { "db": -12 },
+    "duel_win": { "db": -2 },
+    "duel_lose": { "db": -2 },
+    "villain_defeat": { "db": -3, "jitter": 0.0 },
+    "snitch_appear": { "db": -5, "jitter": 0.0 },
+    "victory": { "db": -4, "jitter": 0.0 },
+    "defeat": { "db": -4, "jitter": 0.0 }
+  }
+}
