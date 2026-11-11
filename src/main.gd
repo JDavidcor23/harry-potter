@@ -16,6 +16,7 @@ const Fx := preload("res://src/fx.gd")
 const Dressing := preload("res://src/environment_dressing.gd")
 const Gothic := preload("res://src/gothic_dressing.gd")
 const DuelClash := preload("res://src/duel_clash.gd")
+const PauseMenu := preload("res://src/pause_menu.gd")
 const Sfx := preload("res://src/sfx.gd")
 const SFX_CONFIG_PATH := "res://assets/data/audio_sfx.json"
 const PLAYER_SCENE := preload("res://assets/models/albus.glb")
@@ -38,7 +39,13 @@ const TORCH_BOOST := 3.2
 ## Seconds between lightning flashes (min, max).
 const LIGHTNING_GAP := Vector2(6.0, 13.0)
 ## Seconds the "level cleared" screen stays before the next level loads.
-const LEVEL_BREAK := 3.5
+const LEVEL_BREAK := 0.9
+## Playback speed of the villain death clip.
+const DEATH_SPEED := 2.0
+## Seconds the Snitch takes to climb before bursting.
+const SNITCH_RISE := 0.75
+## Height the Snitch climbs to before it bursts.
+const SNITCH_APEX := 7.5
 const LIGHTNING_COLOR := Color(0.62, 0.8, 1.0)
 ## How far up the visible bolt reaches.
 const LIGHTNING_HEIGHT := 26.0
@@ -129,6 +136,7 @@ var _lightning_timer: float = 4.0
 static var _level: int = 0
 static var _level_arg_used: bool = false
 var _levels: int = 1
+var _pause_menu: PauseMenu
 var _cam_pos: Vector3
 var _cam_look: Vector3
 var _cam_goal: Array = CAM_FIGHT
@@ -166,11 +174,14 @@ func _ready() -> void:
 	_crosshair = Crosshair.new()
 	_crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	aim_layer.add_child(_crosshair)
+	_pause_menu = PauseMenu.new()
+	_pause_menu.can_pause = func() -> bool: return stage != Stage.END
+	add_child(_pause_menu)
 	_parse_debug_args()
 	# Intro: the Dark Mage starts on the ground and levitates up to his tower.
 	villain.position = INTRO_SPOT
 	get_tree().create_timer(0.8).timeout.connect(func() -> void:
-		_levitate(BALCONY, 2.4, func() -> void:
+		_levitate(BALCONY, 1.4, func() -> void:
 			if stage == Stage.INTRO:
 				_throw_timer = 0.4
 				stage = Stage.FIGHT
@@ -433,6 +444,7 @@ func _spawn_actors() -> void:
 	player = Rig.new()
 	add_child(player)
 	player.setup(PLAYER_SCENE, 0.0, [RUN, WALK])
+	player.make_idle_from(WALK, IDLE)
 	player.position = Vector3(0, 0, PLAYER_Z)
 	player.rotation.y = PI
 	_idle(player)
@@ -1112,10 +1124,10 @@ func _villain_defeated() -> void:
 	_cam_goal = CAM_SNITCH
 	hud.show_banner("The Dark Mage falls! Catch the Golden Snitch!", GOLD, 2.4)
 	hud.set_hint(HINT_SNITCH)
-	villain.replay(DEAD)
+	villain.replay(DEAD, DEATH_SPEED)
 	sfx.play("villain_defeat")
 	var tw := create_tween()
-	tw.tween_interval(villain.clip_length(DEAD) + 0.5)
+	tw.tween_interval(villain.clip_length(DEAD) / DEATH_SPEED + 0.15)
 	tw.tween_callback(func() -> void: Fx.burst(self, villain.global_position + Vector3.UP * 0.4, GREEN, 2.5))
 	tw.tween_property(villain, "scale", Vector3.ZERO, 0.4)
 	tw.tween_callback(func() -> void:
@@ -1126,7 +1138,13 @@ func _villain_defeated() -> void:
 		snitch.speed = float(cfg.snitch_speed)
 		snitch.flee_from = player
 		sfx.play("snitch_appear")
-		print("[event] snitch spawned"))
+		print("[event] snitch spawned")
+		# The fight never stalls here: if the Snitch is not caught in time the
+		# level ends anyway and the Dark Mage returns.
+		get_tree().create_timer(float(cfg.snitch_time_limit), false).timeout.connect(func() -> void:
+			if stage == Stage.SNITCH:
+				rules.catch_snitch()
+				_victory()))
 
 
 func _try_catch() -> void:
@@ -1143,21 +1161,77 @@ func _victory() -> void:
 	stage = Stage.END
 	print("[event] victory")
 	sfx.play("victory")
-	Fx.burst(self, snitch.global_position, GOLD, 2.0)
+	hud.set_hint("")
 	snitch.set_process(false)
-	var tw := create_tween()
-	tw.tween_property(snitch, "global_position", camera.global_position + camera.global_basis.z * -2.5 + Vector3(0, -0.2, 0), 0.8)
-	tw.parallel().tween_property(snitch, "scale", Vector3.ONE * 1.6, 0.8)
 	player.replay(CAST, 1.0)
+	# The Snitch spirals up above the grounds and bursts.
+	var from: Vector3 = snitch.global_position
+	var apex := Vector3(from.x * 0.3, SNITCH_APEX, from.z * 0.3 - 1.0)
+	_cam_goal = [Vector3(0, 3.0, 12.5), apex.lerp(Vector3(0, 2.0, 0), 0.35)]
+	var tw := create_tween()
+	tw.tween_method(func(u: float) -> void:
+		var swirl := Vector3(cos(u * TAU * 3.0), 0, sin(u * TAU * 3.0)) * 0.9 * (1.0 - u)
+		snitch.global_position = from.lerp(apex, ease(u, 0.5)) + swirl, 0.0, 1.0, SNITCH_RISE)
+	tw.parallel().tween_property(snitch, "scale", Vector3.ONE * 1.8, SNITCH_RISE)
+	tw.tween_callback(_snitch_explodes.bind(apex))
+
+
+## Golden explosion in the air, then the Dark Mage returns (or the run ends).
+func _snitch_explodes(at: Vector3) -> void:
+	snitch.queue_free()
+	for i in 3:
+		var off := Vector3(randf_range(-0.8, 0.8), randf_range(-0.5, 0.5), randf_range(-0.8, 0.8))
+		Fx.burst(self, at + off * i, GOLD.lerp(Color.WHITE, 0.3 * i), 2.5 + i)
+	_duel_fx.shockwave(at, GOLD, 11.0)
+	_duel_fx.shockwave(at, Color.WHITE, 6.0)
+	var sparks := Gothic.embers(Vector3.ONE * 0.3, 160, 1.7, 0.13, GOLD)
+	sparks.one_shot = true
+	sparks.explosiveness = 1.0
+	sparks.spread = 180.0
+	sparks.gravity = Vector3(0, -6.0, 0)
+	sparks.initial_velocity_min = 4.0
+	sparks.initial_velocity_max = 11.0
+	sparks.position = at
+	add_child(sparks)
+	var flash := OmniLight3D.new()
+	flash.light_color = GOLD
+	flash.light_energy = 16.0
+	flash.omni_range = 30.0
+	flash.light_volumetric_fog_energy = 3.0
+	flash.position = at
+	add_child(flash)
+	_shake = 0.7
+	sfx.play("thunder", 6.0)
+	var tw := create_tween()
+	tw.tween_property(flash, "light_energy", 0.0, 0.45)
+	tw.tween_callback(flash.queue_free)
 	if _level < _levels - 1:
-		# More levels to go: show the result briefly, then load the next one.
-		hud.show_end("LEVEL %d CLEARED!" % (_level + 1),
-			"Level %d: the Dark Mage returns stronger..." % (_level + 2), GOLD)
-		_level += 1
-		get_tree().create_timer(LEVEL_BREAK).timeout.connect(get_tree().reload_current_scene)
-		return
-	hud.show_end("VICTORY!", "You defeated the Dark Mage on every level!\nPress R to play again", GOLD)
-	_end_if_requested()
+		tw.tween_callback(_villain_returns)
+	else:
+		tw.tween_callback(func() -> void:
+			hud.show_end("VICTORY!", "You defeated the Dark Mage on every level!\nPress R to play again", GOLD)
+			_end_if_requested())
+	tw.tween_interval(1.0)
+	tw.tween_callback(sparks.queue_free)
+
+
+## Lightning brings the Dark Mage back on the grounds; the next level then
+## starts from that same spot.
+func _villain_returns() -> void:
+	hud.show_banner("LEVEL %d CLEARED!  The Dark Mage returns stronger..." % (_level + 1), GREEN, LEVEL_BREAK + 0.5)
+	_level += 1
+	_cam_goal = CAM_FIGHT
+	_lightning_strike(null, INTRO_SPOT)
+	Fx.burst(self, INTRO_SPOT + CHEST, GREEN, 2.5)
+	villain.visible = true
+	villain.position = INTRO_SPOT
+	villain.rotation.y = 0.0
+	villain.scale = Vector3.ONE * 0.01
+	_idle(villain)
+	var tw := create_tween()
+	tw.tween_property(villain, "scale", Vector3.ONE * VILLAIN_SCALE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(LEVEL_BREAK)
+	tw.tween_callback(get_tree().reload_current_scene)
 
 
 func _game_over() -> void:
@@ -1213,6 +1287,8 @@ func _parse_debug_args() -> void:
 
 func _apply_debug_phase() -> void:
 	match _dbg.get("phase", ""):
+		"pause":
+			_pause_menu.open()
 		"lose":
 			rules.player_hearts = 1
 			_player_hit()

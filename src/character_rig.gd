@@ -11,6 +11,11 @@ var _current: String = ""
 var _wand_tip_local: Vector3 = Vector3.ZERO
 var _has_tip: bool = false
 
+## Idle breathing: chest lean in radians and hip drop as a fraction of height.
+const BREATH_LEAN := 0.035
+const BREATH_DIP := 0.012
+const STANDING_SAMPLES := 40
+
 
 ## Instantiates [param scene] under this node, rotated by [param yaw] so the
 ## model faces this node's -Z. [param looping] lists clips that should loop.
@@ -54,6 +59,76 @@ func add_clip_from(scene: PackedScene, clip: String, as_name: String, looping: b
 			var lib_name: StringName = anim.get_animation_library_list()[0]
 			anim.get_animation_library(lib_name).add_animation(as_name, a)
 	donor.free()
+
+
+## Builds a looping standing idle named [param as_name] out of [param clip]
+## (a walk cycle): it takes the frame where the feet pass each other, the most
+## upright moment, and adds a slow breathing motion on top.
+func make_idle_from(clip: String, as_name: String, length: float = 2.6) -> void:
+	if anim == null or skeleton == null or not anim.has_animation(clip):
+		return
+	var src: Animation = anim.get_animation(clip)
+	var at: float = _standing_time(clip)
+	var idle := Animation.new()
+	idle.length = length
+	idle.loop_mode = Animation.LOOP_LINEAR
+	for i in src.get_track_count():
+		var type: int = src.track_get_type(i)
+		var bone: String = String(src.track_get_path(i)).get_slice(":", 1).to_lower()
+		var t: int = -1
+		match type:
+			Animation.TYPE_ROTATION_3D:
+				var q: Quaternion = src.rotation_track_interpolate(i, at)
+				t = idle.add_track(type)
+				idle.rotation_track_insert_key(t, 0.0, q)
+				# The chest leans a touch on each breath.
+				if bone.ends_with("spine1") or bone.ends_with("spine"):
+					idle.rotation_track_insert_key(t, length * 0.5, q * Quaternion(Vector3.RIGHT, BREATH_LEAN))
+				idle.rotation_track_insert_key(t, length, q)
+			Animation.TYPE_POSITION_3D:
+				var v: Vector3 = src.position_track_interpolate(i, at)
+				t = idle.add_track(type)
+				idle.position_track_insert_key(t, 0.0, v)
+				if bone.ends_with("hips"):
+					idle.position_track_insert_key(t, length * 0.5, v * Vector3(1, 1.0 - BREATH_DIP, 1))
+				idle.position_track_insert_key(t, length, v)
+			Animation.TYPE_SCALE_3D:
+				t = idle.add_track(type)
+				idle.scale_track_insert_key(t, 0.0, src.scale_track_interpolate(i, at))
+		if t >= 0:
+			idle.track_set_path(t, src.track_get_path(i))
+			idle.track_set_interpolation_type(t, Animation.INTERPOLATION_CUBIC)
+	var lib_name: StringName = anim.get_animation_library_list()[0]
+	anim.get_animation_library(lib_name).add_animation(as_name, idle)
+
+
+## Time in [param clip] where feet (and hands) are closest together.
+func _standing_time(clip: String) -> float:
+	var ends := {"leftfoot": -1, "rightfoot": -1, "lefthand": -1, "righthand": -1}
+	for i in skeleton.get_bone_count():
+		var bone: String = skeleton.get_bone_name(i).to_lower()
+		for key: String in ends:
+			if bone.ends_with(key):
+				ends[key] = i
+	if ends.leftfoot < 0 or ends.rightfoot < 0:
+		return 0.0
+	var length: float = anim.get_animation(clip).length
+	var best_time: float = 0.0
+	var best_score: float = INF
+	anim.play(clip, 0.0)
+	for step in STANDING_SAMPLES:
+		var time: float = length * float(step) / float(STANDING_SAMPLES)
+		anim.seek(time, true)
+		var score: float = skeleton.get_bone_global_pose(ends.leftfoot).origin.distance_to(
+			skeleton.get_bone_global_pose(ends.rightfoot).origin)
+		if ends.lefthand >= 0 and ends.righthand >= 0:
+			score += 0.5 * skeleton.get_bone_global_pose(ends.lefthand).origin.distance_to(
+				skeleton.get_bone_global_pose(ends.righthand).origin)
+		if score < best_score:
+			best_score = score
+			best_time = time
+	anim.stop()
+	return best_time
 
 
 func has_clip(clip: String) -> bool:

@@ -53,6 +53,7 @@
 
   "snitch_catch_radius": 1.3,
   "snitch_speed": 5.5,
+  "snitch_time_limit": 4.0,
 
   "levels": [
     { "villain_max_hearts": 1, "villain_push": 0.20, "duel_surge_push": 0.08, "duel_surge_every": 2.5 },
